@@ -1,4 +1,5 @@
 import os
+import sys
 import warnings
 from tqdm import tqdm
 import argparse
@@ -20,6 +21,8 @@ from networks.dan import DAN
 def warn(*args, **kwargs):
     pass
 warnings.warn = warn
+
+eps = sys.float_info.epsilon
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -110,7 +113,8 @@ class PartitionLoss(nn.Module):
 
         if num_head > 1:
             var = x.var(dim=1).mean()
-            loss = torch.log(1+num_head/var)
+            ## add eps to avoid empty var case
+            loss = torch.log(1+num_head/(var+eps))
         else:
             loss = 0
             
@@ -211,7 +215,10 @@ def run_training():
             iter_cnt = 0
             bingo_cnt = 0
             sample_cnt = 0
-            baccs = []
+            
+            ## for calculating balanced accuracy
+            y_true = []
+            y_pred = []
 
             model.eval()
             for (imgs, targets) in val_loader:
@@ -228,7 +235,9 @@ def run_training():
                 bingo_cnt += correct_num.sum().cpu()
                 sample_cnt += out.size(0)
                 
-                baccs.append(balanced_accuracy_score(targets.cpu().numpy(),predicts.cpu().numpy()))
+                y_true.append(targets.cpu().numpy())
+                y_pred.append(predicts.cpu().numpy())
+        
             running_loss = running_loss/iter_cnt   
             scheduler.step()
 
@@ -236,15 +245,18 @@ def run_training():
             acc = np.around(acc.numpy(),4)
             best_acc = max(acc,best_acc)
 
-            bacc = np.around(np.mean(baccs),4)
-            tqdm.write("[Epoch %d] Validation accuracy:%.4f. bacc:%.4f. Loss:%.3f" % (epoch, acc, bacc, running_loss))
+            y_true = np.concatenate(y_true)
+            y_pred = np.concatenate(y_pred)
+            balanced_acc = np.around(balanced_accuracy_score(y_true, y_pred),4)
+
+            tqdm.write("[Epoch %d] Validation accuracy:%.4f. bacc:%.4f. Loss:%.3f" % (epoch, acc, balanced_acc, running_loss))
             tqdm.write("best_acc:" + str(best_acc))
 
             if acc > 0.89 and acc == best_acc:
                 torch.save({'iter': epoch,
                             'model_state_dict': model.state_dict(),
                              'optimizer_state_dict': optimizer.state_dict(),},
-                            os.path.join('checkpoints', "rafdb_epoch"+str(epoch)+"_acc"+str(acc)+"_bacc"+str(bacc)+".pth"))
+                            os.path.join('checkpoints', "rafdb_epoch"+str(epoch)+"_acc"+str(acc)+"_bacc"+str(balanced_acc)+".pth"))
                 tqdm.write('Model saved.')
 
         
